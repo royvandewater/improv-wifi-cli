@@ -1,0 +1,67 @@
+#!/usr/bin/env python
+
+import asyncio
+import sys
+from bleak import BleakScanner, BleakClient
+from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
+from send_wifi_settings import send_wifi_settings
+
+BLE_IMPROV_SERVICE_ID = "00467768-6228-2272-4663-277478268000"
+BLE_IMPROV_CHARACTERISTIC_CURRENT_STATUS = "00467768-6228-2272-4663-277478268001"
+BLE_IMPROV_CHARACTERISTIC_ERROR_STATE = "00467768-6228-2272-4663-277478268002"
+BLE_IMPROV_CHARACTERISTIC_WRITE_RPC = "00467768-6228-2272-4663-277478268003"
+BLE_IMPROV_CHARACTERISTIC_READ_RPC = "00467768-6228-2272-4663-277478268004"
+
+
+class Improv:
+    def __init__(self, ssid, password) -> None:
+        self.device_programmed = asyncio.Event()
+        self.lock = asyncio.Lock()
+        self.ssid = ssid
+        self.password = password
+        self.scanner = BleakScanner(self._on_device_discovered, service_uuids=[BLE_IMPROV_SERVICE_ID])
+
+    async def run(self) -> None:
+        await self.scanner.start()
+        await self.device_programmed.wait()
+
+    async def _on_device_discovered(self, device: BLEDevice, advertising_data: AdvertisementData) -> None:
+        await self.scanner.stop()
+
+        if self.lock.locked():
+            return
+
+        async with self.lock:
+            print(f'discovered device "{device.address}" with name: "{device.name}"')
+            async with BleakClient(device.address) as client:
+                status = await client.read_gatt_char(BLE_IMPROV_CHARACTERISTIC_CURRENT_STATUS)
+                print(f"device status: {status}")
+
+                await client.start_notify(BLE_IMPROV_CHARACTERISTIC_CURRENT_STATUS, lambda _, status: print(f"device status changed: {status}"))
+
+                # print(f'Please enter the wifi SSID: ')
+                # ssid = input()
+                # print(f'Please enter the wifi password: ')
+                # password = input()
+
+                wifi_settings = send_wifi_settings(self.ssid, self.password)
+                print(f'Writing wifi settings: {wifi_settings}')
+                await client.write_gatt_char(BLE_IMPROV_CHARACTERISTIC_WRITE_RPC, wifi_settings)
+                result = await client.read_gatt_char(BLE_IMPROV_CHARACTERISTIC_READ_RPC)
+                print(f"result: {result}")
+                status = await client.read_gatt_char(BLE_IMPROV_CHARACTERISTIC_CURRENT_STATUS)
+                print(f"device status: {status}")
+
+        self.device_programmed.set()
+
+
+async def main(args: list[str]):
+    (_, ssid, password) = args
+
+    improv = Improv(ssid, password)
+    await improv.run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main(sys.argv))
